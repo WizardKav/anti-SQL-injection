@@ -1,0 +1,38 @@
+# pip: argon2-cffi, psycopg2-binary
+from argon2 import PasswordHasher
+from psycopg2 import connect
+
+ph = PasswordHasher()  # defaults; configure time/memory/parallelism as needed
+
+# Register
+def register_user(conn, email, username, plaintext_password):
+    password_hash = ph.hash(plaintext_password)  # includes salt
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO users (email, username, password_hash, password_algo) VALUES (%s, %s, %s, %s) RETURNING id",
+            (email, username, password_hash, "argon2id"))
+        uid = cur.fetchone()[0]
+        conn.commit()
+        return uid
+
+# Login (verify)
+def verify_login(conn, email, plaintext_password):
+    with conn.cursor() as cur:
+        cur.execute("SELECT id, password_hash, failed_login_attempts, locked_until FROM users WHERE email = %s", (email,))
+        row = cur.fetchone()
+        if not row:
+            return False
+        uid, stored_hash, failed, locked_until = row
+        # check lock
+        # verify hash
+        try:
+            ph.verify(stored_hash, plaintext_password)
+        except Exception:
+            # increment failed count (parameterized)
+            cur.execute("UPDATE users SET failed_login_attempts = failed_login_attempts + 1 WHERE id = %s", (uid,))
+            conn.commit()
+            return False
+        # success: reset failed
+        cur.execute("UPDATE users SET failed_login_attempts = 0, last_login_at = now() WHERE id = %s", (uid,))
+        conn.commit()
+        return True
